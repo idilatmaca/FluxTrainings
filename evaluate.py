@@ -7,6 +7,7 @@ from typing import Optional
 import torch
 from diffusers import FluxPipeline
 
+STYLE = "realistic lighting"
 
 BASE_MODEL_ID = "black-forest-labs/FLUX.1-dev"
 SUBJECT = "sks-idil person"
@@ -19,13 +20,12 @@ WIDTH = 768
 SEED = 0
 
 VARIATIONS = [
-    ("baseline",      "natural headshot, neutral expression",                      ""),
+    ("baseline",      "",                      ""),
     ("hair_red",      "natural headshot, neutral expression, deep red hair",       ""),
     ("hair_blonde",   "natural headshot, neutral expression, vibrant blonde hair", ""),
     ("hair_blue",     "natural headshot, neutral expression, blue hair",           ""),
     ("hair_pixie",    "natural headshot, neutral expression, short pixie-cut hair",""),
-    ("glasses_on",    "natural headshot, neutral expression, wearing reading glasses", ""),
-    ("glasses_off",   "natural headshot, neutral expression, without any glasses", ""),
+    ("glasses_on",    "natural headshot, neutral expression, wearing reading glasses", "")
     ("expr_smile",  "natural headshot, subtle smile, lips slightly parted, cheeks gently raised (AU12), eyes relaxed",
                     "exaggerated grin, extreme smile, cartoonish"),
 
@@ -51,6 +51,7 @@ MODELS = [
 ]
 
 OUTPUT_ROOT = "eval_outputs"
+# ------------------------------------------------
 
 def set_deterministic(seed: int = 0):
     torch.manual_seed(seed)
@@ -91,7 +92,8 @@ def main():
         pipe = load_pipe(lora_path)
 
         for name, desc, extra_neg in VARIATIONS:
-            prompt = f"{SUBJECT} {desc}".strip()
+            prompt = f"{SUBJECT}, {STYLE}, {desc}".strip().strip(",")
+
             neg = (NEGATIVE_PROMPT + " " + extra_neg).strip()
 
             print(f"   -> {name}: '{prompt}'")

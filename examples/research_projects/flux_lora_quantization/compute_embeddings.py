@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import argparse
+from PIL import Image
 
 import pandas as pd
 import torch
@@ -27,7 +28,7 @@ from diffusers import FluxPipeline
 
 
 MAX_SEQ_LENGTH = 77
-OUTPUT_PATH = "embeddings.parquet"
+OUTPUT_PATH = "embeddings-idil.parquet"
 
 
 def generate_image_hash(image):
@@ -62,37 +63,42 @@ def compute_embeddings(pipeline, prompts, max_sequence_length):
     print(f"Max memory allocated: {max_memory:.3f} GB")
     return all_prompt_embeds, all_pooled_prompt_embeds, all_text_ids
 
-
+# In compute_embeddings.py
 def run(args):
-    dataset = load_dataset("Norod78/Yarn-art-style", split="train")
-    image_prompts = {generate_image_hash(sample["image"]): sample["text"] for sample in dataset}
-    all_prompts = list(image_prompts.values())
-    print(f"{len(all_prompts)=}")
+    # Load your CSV file and access the "train" split.
+    # Make sure your CSV has "image" and "text" as column headers.
+    dataset = load_dataset("csv", data_files={"train": "/home/syntonym4090/Desktop/FluxTrainings/idil.csv"})["train"]
 
+    all_prompts = dataset["text"]
+    all_image_paths = dataset["image"]
+    print(f"Found {len(all_prompts)} prompts and image paths to process.")
+
+    # Load the pipeline
     pipeline = load_flux_dev_pipeline()
+    
+    # Compute the embeddings for all prompts
     all_prompt_embeds, all_pooled_prompt_embeds, all_text_ids = compute_embeddings(
         pipeline, all_prompts, args.max_sequence_length
     )
 
-    data = []
-    for i, (image_hash, _) in enumerate(image_prompts.items()):
-        data.append((image_hash, all_prompt_embeds[i], all_pooled_prompt_embeds[i], all_text_ids[i]))
-    print(f"{len(data)=}")
+    # Create a DataFrame with everything the training script needs
+    df = pd.DataFrame({
+        "image_path": all_image_paths, # <-- The required column
+        "prompt": all_prompts,
+        "prompt_embeds": all_prompt_embeds,
+        "pooled_prompt_embeds": all_pooled_prompt_embeds,
+        "text_ids": all_text_ids
+    })
+    print(f"Created DataFrame with {len(df)} entries.")
 
-    # Create a DataFrame
+    # Convert embedding tensors to lists for saving
     embedding_cols = ["prompt_embeds", "pooled_prompt_embeds", "text_ids"]
-    df = pd.DataFrame(data, columns=["image_hash"] + embedding_cols)
-    print(f"{len(df)=}")
-
-    # Convert embedding lists to arrays (for proper storage in parquet)
     for col in embedding_cols:
         df[col] = df[col].apply(lambda x: x.cpu().numpy().flatten().tolist())
 
     # Save the dataframe to a parquet file
     df.to_parquet(args.output_path)
     print(f"Data successfully serialized to {args.output_path}")
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(

@@ -22,7 +22,7 @@ import os
 import random
 import shutil
 from pathlib import Path
-
+from PIL import Image
 import numpy as np
 import pandas as pd
 import torch
@@ -457,111 +457,96 @@ def parse_args(input_args=None):
         args.local_rank = env_local_rank
 
     return args
-
+# COPY AND PASTE THIS ENTIRE CLASS TO REPLACE THE OLD ONE
 
 class DreamBoothDataset(Dataset):
+    """
+    A custom dataset class that loads images and pre-computed embeddings.
+    It reads a single parquet file for image paths and their corresponding embeddings.
+    """
     def __init__(
         self,
         data_df_path,
-        dataset_name,
         size=1024,
         max_sequence_length=77,
         center_crop=False,
+        random_flip=False, # We get this from args
     ):
-        # Logistics
         self.size = size
         self.center_crop = center_crop
+        self.random_flip = random_flip
         self.max_sequence_length = max_sequence_length
 
-        self.data_df_path = Path(data_df_path)
-        if not self.data_df_path.exists():
-            raise ValueError("`data_df_path` doesn't exists.")
-
-        # Load images.
-        dataset = load_dataset(dataset_name, split="train")
-        instance_images = [sample["image"] for sample in dataset]
-        image_hashes = [self.generate_image_hash(image) for image in instance_images]
-        self.instance_images = instance_images
-        self.image_hashes = image_hashes
-
-        # Image transformations
-        self.pixel_values = self.apply_image_transformations(
-            instance_images=instance_images, size=size, center_crop=center_crop
-        )
-
-        # Map hashes to embeddings.
-        self.data_dict = self.map_image_hash_embedding(data_df_path=data_df_path)
-
-        self.num_instance_images = len(instance_images)
+        # 1. Load the single source of truth: our parquet file
+        if not os.path.exists(data_df_path):
+            raise ValueError(f"`data_df_path` {data_df_path} does not exist.")
+        
+        self.data_df = pd.read_parquet(data_df_path)
+        
+        # 2. Store the list of image paths and prompts
+        self.image_paths = self.data_df["image_path"].tolist()
+        self.prompts = self.data_df["prompt"].tolist()
+        self.num_instance_images = len(self.image_paths)
         self._length = self.num_instance_images
 
-    def __len__(self):
-        return self._length
-
-    def __getitem__(self, index):
-        example = {}
-        instance_image = self.pixel_values[index % self.num_instance_images]
-        image_hash = self.image_hashes[index % self.num_instance_images]
-        prompt_embeds, pooled_prompt_embeds, text_ids = self.data_dict[image_hash]
-        example["instance_images"] = instance_image
-        example["prompt_embeds"] = prompt_embeds
-        example["pooled_prompt_embeds"] = pooled_prompt_embeds
-        example["text_ids"] = text_ids
-        return example
-
-    def apply_image_transformations(self, instance_images, size, center_crop):
-        pixel_values = []
-
-        train_resize = transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR)
-        train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
-        train_flip = transforms.RandomHorizontalFlip(p=1.0)
-        train_transforms = transforms.Compose(
+        # 3. Create the dictionary mapping prompts to embeddings
+        self.embedding_dict = {}
+        for _, row in self.data_df.iterrows():
+            prompt_embeds = torch.from_numpy(np.array(row["prompt_embeds"]).reshape(self.max_sequence_length, 4096))
+            pooled_prompt_embeds = torch.from_numpy(np.array(row["pooled_prompt_embeds"]).reshape(768))
+            text_ids = torch.from_numpy(np.array(row["text_ids"]).reshape(77, 3))
+            self.embedding_dict[row["prompt"]] = (prompt_embeds, pooled_prompt_embeds, text_ids)
+            
+        # 4. Define image transformations
+        self.image_transforms = transforms.Compose(
             [
+                transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
         )
-        for image in instance_images:
-            image = exif_transpose(image)
-            if not image.mode == "RGB":
-                image = image.convert("RGB")
-            image = train_resize(image)
-            if args.random_flip and random.random() < 0.5:
-                # flip
-                image = train_flip(image)
-            if args.center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
-                image = crop(image, y1, x1, h, w)
-            image = train_transforms(image)
-            pixel_values.append(image)
 
-        return pixel_values
+    def __len__(self):
+        return self._length
 
-    def convert_to_torch_tensor(self, embeddings: list):
-        prompt_embeds = embeddings[0]
-        pooled_prompt_embeds = embeddings[1]
-        text_ids = embeddings[2]
-        prompt_embeds = np.array(prompt_embeds).reshape(self.max_sequence_length, 4096)
-        pooled_prompt_embeds = np.array(pooled_prompt_embeds).reshape(768)
-        text_ids = np.array(text_ids).reshape(77, 3)
-        return torch.from_numpy(prompt_embeds), torch.from_numpy(pooled_prompt_embeds), torch.from_numpy(text_ids)
+    def __getitem__(self, idx):
+        example = {}
+        
+        # Get the image path and prompt for the current index
+        image_path = self.image_paths[idx % self.num_instance_images]
+        prompt = self.prompts[idx % self.num_instance_images]
+        
+        # Load and process the image
+        image = Image.open(image_path)
+        image = exif_transpose(image)
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        
+        pixel_values = self.image_transforms(image)
+        
+        # Apply random cropping or center cropping
+        if self.center_crop:
+            y1 = max(0, int(round((pixel_values.shape[1] - self.size) / 2.0)))
+            x1 = max(0, int(round((pixel_values.shape[2] - self.size) / 2.0)))
+            pixel_values = crop(pixel_values, y1, x1, self.size, self.size)
+        else:
+            y1, x1, h, w = transforms.RandomCrop.get_params(pixel_values, (self.size, self.size))
+            pixel_values = crop(pixel_values, y1, x1, h, w)
+            
+        # Apply random flip
+        if self.random_flip and random.random() < 0.5:
+            pixel_values = torch.fliplr(pixel_values)
 
-    def map_image_hash_embedding(self, data_df_path):
-        hashes_df = pd.read_parquet(data_df_path)
-        data_dict = {}
-        for i, row in hashes_df.iterrows():
-            embeddings = [row["prompt_embeds"], row["pooled_prompt_embeds"], row["text_ids"]]
-            prompt_embeds, pooled_prompt_embeds, text_ids = self.convert_to_torch_tensor(embeddings=embeddings)
-            data_dict.update({row["image_hash"]: (prompt_embeds, pooled_prompt_embeds, text_ids)})
-        return data_dict
+        # Get the pre-computed embeddings using the prompt as the key
+        prompt_embeds, pooled_prompt_embeds, text_ids = self.embedding_dict[prompt]
 
-    def generate_image_hash(self, image):
-        return insecure_hashlib.sha256(image.tobytes()).hexdigest()
-
+        example["instance_images"] = pixel_values
+        example["prompt_embeds"] = prompt_embeds
+        example["pooled_prompt_embeds"] = pooled_prompt_embeds
+        example["text_ids"] = text_ids
+        
+        return example
+    
 
 def collate_fn(examples):
     pixel_values = [example["instance_images"] for example in examples]
@@ -898,11 +883,11 @@ def main(args):
 
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
-        data_df_path=args.data_df_path,
-        dataset_name="Norod78/Yarn-art-style",
-        size=args.resolution,
-        max_sequence_length=args.max_sequence_length,
-        center_crop=args.center_crop,
+    data_df_path=args.data_df_path,
+    size=args.resolution,
+    max_sequence_length=args.max_sequence_length,
+    center_crop=args.center_crop,
+    random_flip=args.random_flip,
     )
 
     train_dataloader = torch.utils.data.DataLoader(

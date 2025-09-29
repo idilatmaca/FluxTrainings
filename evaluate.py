@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# evaluate.py (simple, local LoRA path fix)
+
 import os
 from datetime import datetime
 from typing import Optional
@@ -7,7 +6,6 @@ from typing import Optional
 import torch
 from diffusers import FluxPipeline
 
-STYLE = "realistic lighting"
 
 BASE_MODEL_ID = "black-forest-labs/FLUX.1-dev"
 SUBJECT = "sks-idil person"
@@ -16,7 +14,7 @@ NEGATIVE_PROMPT = ""
 NUM_INFERENCE_STEPS = 28
 GUIDANCE_SCALE = 3.5
 HEIGHT = 1024
-WIDTH = 768
+WIDTH = 1024
 SEED = 0
 
 VARIATIONS = [
@@ -25,7 +23,9 @@ VARIATIONS = [
     ("hair_blonde",   "natural headshot, neutral expression, vibrant blonde hair", ""),
     ("hair_blue",     "natural headshot, neutral expression, blue hair",           ""),
     ("hair_pixie",    "natural headshot, neutral expression, short pixie-cut hair",""),
-    ("glasses_on",    "natural headshot, neutral expression, wearing reading glasses", "")
+    ("glasses_on",    "natural headshot, neutral expression, wearing reading glasses", ""),
+    ("glasses_off",   "natural headshot, neutral expression, without any glasses", ""),
+
     ("expr_smile",  "natural headshot, subtle smile, lips slightly parted, cheeks gently raised (AU12), eyes relaxed",
                     "exaggerated grin, extreme smile, cartoonish"),
 
@@ -37,6 +37,7 @@ VARIATIONS = [
 
     ("expr_angry",  "natural headshot, subtle anger, brows lowered and drawn together (AU4), upper eyelids lowered (AU7), lips pressed (AU24), jaw set",
                     "smile, cheerful, relaxed, surprise, wide eyes"),
+
     ("eyes_closed", "natural headshot, eyes shut, eyelids fully closed and touching, no iris visible, resting face",
                     "open eyes, visible pupils, visible iris, half-open eyes, squint"),
 ]
@@ -92,8 +93,7 @@ def main():
         pipe = load_pipe(lora_path)
 
         for name, desc, extra_neg in VARIATIONS:
-            prompt = f"{SUBJECT}, {STYLE}, {desc}".strip().strip(",")
-
+            prompt = f"{SUBJECT} {desc}".strip()
             neg = (NEGATIVE_PROMPT + " " + extra_neg).strip()
 
             print(f"   -> {name}: '{prompt}'")
